@@ -2066,25 +2066,67 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
   var Sound = {
     ctx: null,
     finalEl: null,
+    finalUnlocked: false,
     muted: lsGet(MUTE_KEY) === '1',
     primeFinal: function () {
       if (this.finalEl) return;
       try {
-        var a = new Audio('final.mp3');
+        var src = window.location.protocol === 'file:' ? 'final.mp3' : 'final.mp3?v=2';
+        var a = new Audio(src);
         a.preload = 'auto';
         a.volume = 0.95;
+        a.playsInline = true;
+        try { a.setAttribute('playsinline', ''); } catch (e) {}
         this.finalEl = a;
       } catch (e) { this.finalEl = null; }
     },
-    /* 合成出最终形态「李」时播放的音频 */
+    /* 在手机浏览器里，HTMLAudio 必须在用户手势里先“解锁”一次，否则合成时的播放会被拦截。 */
+    unlockFinal: function () {
+      if (this.muted || this.finalUnlocked) return;
+      this.primeFinal();
+      var a = this.finalEl;
+      var self = this;
+      if (!a) return;
+      var done = function (ok) {
+        try { a.pause(); a.currentTime = 0; } catch (e) {}
+        try { a.muted = false; } catch (e) {}
+        if (ok) self.finalUnlocked = true;
+      };
+      try {
+        a.muted = true;
+        var p = a.play();
+        if (p && p.then) p.then(function () { done(true); }, function () { done(false); });
+        else done(true);
+      } catch (e) {
+        try { a.muted = false; } catch (_e) {}
+      }
+    },
+    /* 合成出最终形态「李」时播放的音频；任何播放失败都不能中断游戏主循环。 */
     final: function () {
       if (this.muted) return;
       this.primeFinal();
       var a = this.finalEl;
-      if (!a) return;
-      try { a.currentTime = 0; } catch (e) {}
-      var p = a.play();
-      if (p && p.catch) p.catch(function () {});
+      var self = this;
+      if (!a) {
+        try { this.bonus(); } catch (e) {}
+        return;
+      }
+      try {
+        a.muted = false;
+        a.currentTime = 0;
+      } catch (e) {}
+      var p;
+      try {
+        p = a.play();
+      } catch (e) {
+        try { this.bonus(); } catch (_e) {}
+        return;
+      }
+      if (p && p.catch) {
+        p.catch(function () {
+          try { self.bonus(); } catch (e) {}
+        });
+      }
     },
     ensure: function () {
       this.primeFinal();
@@ -3593,6 +3635,29 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
     c.restore();
   }
 
+  function drawBlackFallback(b) {
+    ctx.save();
+    ctx.fillStyle = '#08060c';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, Math.max(b.rx || 0, b.ry || 0), 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(226,216,255,.72)';
+    ctx.beginPath();
+    ctx.arc(b.x - 14, b.y - 10, 5, 0, TAU);
+    ctx.arc(b.x + 14, b.y - 10, 5, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawWhiteFallback(b) {
+    ctx.save();
+    ctx.fillStyle = '#fbf8f0';
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
   function drawPurgeRing(now) {
     var b = state.black;
     if (!b || !state.hazard || state.purge <= 0.01) return;
@@ -3667,19 +3732,29 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
       }
 
       if (b.kind === 'black') {
-        drawBlackBody(b, now);
+        try {
+          drawBlackBody(b, now);
+        } catch (e) {
+          noteRuntimeError(e);
+          drawBlackFallback(b);
+        }
         continue;
       }
       if (b.kind === 'white') {
-        drawWhiteGoo(ctx, b.x, b.y, b.r, b.wob, scale, state.purge > 0.01);
-        if (b.whiteLife < 3) {
-          ctx.save();
-          ctx.globalAlpha = clamp((3 - b.whiteLife) / 3, 0, 1) * 0.35;
-          ctx.fillStyle = '#bdb5a5';
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, b.r * 1.05, 0, TAU);
-          ctx.fill();
-          ctx.restore();
+        try {
+          drawWhiteGoo(ctx, b.x, b.y, b.r, b.wob, scale, state.purge > 0.01);
+          if (b.whiteLife < 3) {
+            ctx.save();
+            ctx.globalAlpha = clamp((3 - b.whiteLife) / 3, 0, 1) * 0.35;
+            ctx.fillStyle = '#bdb5a5';
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.r * 1.05, 0, TAU);
+            ctx.fill();
+            ctx.restore();
+          }
+        } catch (e) {
+          noteRuntimeError(e);
+          drawWhiteFallback(b);
         }
         continue;
       }
@@ -3901,24 +3976,38 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
       ctx.translate(rand(-state.shake, state.shake) * 0.35, rand(-state.shake, state.shake) * 0.35);
     }
 
-    drawBoard();
-    drawHazardAtmosphere(performance.now());
-    drawBalls();
-    drawPurgeRing(performance.now());
-    drawAim();
-    drawEffects(state.freeze > 0 ? 0 : dt);
-    drawOnboarding();
+    try { drawBoard(); } catch (e) { noteRuntimeError(e); }
+    try { drawHazardAtmosphere(performance.now()); } catch (e) { noteRuntimeError(e); }
+    try { drawBalls(); } catch (e) { noteRuntimeError(e); }
+    try { drawPurgeRing(performance.now()); } catch (e) { noteRuntimeError(e); }
+    try { drawAim(); } catch (e) { noteRuntimeError(e); }
+    try { drawEffects(state.freeze > 0 ? 0 : dt); } catch (e) { noteRuntimeError(e); }
+    try { drawOnboarding(); } catch (e) { noteRuntimeError(e); }
 
     if (state.flash > 0) {
-      ctx.save();
-      ctx.globalAlpha = clamp(state.flash, 0, 1) * 0.30;
-      ctx.fillStyle = '#fff8e8';
-      ctx.fillRect(0, 0, W, H);
-      ctx.restore();
+      try {
+        ctx.save();
+        ctx.globalAlpha = clamp(state.flash, 0, 1) * 0.30;
+        ctx.fillStyle = '#fff8e8';
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      } catch (e) { noteRuntimeError(e); }
     }
 
-    drawTopPreview();
+    try { drawTopPreview(); } catch (e) { noteRuntimeError(e); }
     ctx.restore();
+  }
+
+  function noteRuntimeError(err) {
+    var msg = String((err && err.message) || err || 'unknown');
+    try { window.__LWY_LAST_ERROR__ = msg; } catch (e) {}
+    if (!window.__LWY_ERR_LOGGED__) {
+      window.__LWY_ERR_LOGGED__ = true;
+      try { console.error('game error:', err); } catch (e) {}
+    }
+    if (/[?&]debug=1/.test(window.location.search || '')) {
+      try { showToast('运行错误: ' + msg.slice(0, 90)); } catch (e) {}
+    }
   }
 
   function frame(now) {
@@ -3926,14 +4015,20 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
     last = now;
     if (dt > 0.25) dt = 0.25;
     acc += dt;
-    var guard = 0;
-    while (acc >= FIXED && guard < 5) {
-      update(FIXED);
-      acc -= FIXED;
-      guard++;
+    try {
+      var guard = 0;
+      while (acc >= FIXED && guard < 5) {
+        update(FIXED);
+        acc -= FIXED;
+        guard++;
+      }
+      if (guard >= 5) acc = 0;
+      render(dt);
+    } catch (err) {
+      /* 手机浏览器上音频 / Canvas 的任何异常都不能让主循环永久停掉。 */
+      acc = 0;
+      noteRuntimeError(err);
     }
-    if (guard >= 5) acc = 0;
-    render(dt);
     raf(frame);
   }
 
@@ -3955,6 +4050,7 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
     if (state.over) return;
     if (e.target && e.target.closest && (e.target.closest('.revive-chip') || e.target.closest('.hazard-dock'))) return;
     Sound.ensure();
+    Sound.unlockFinal();
     moveAim(pointerToX(e.clientX));
     if (e.pointerType === 'touch') {
       touchAiming = true;
@@ -3987,6 +4083,7 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
     stage.addEventListener('mousedown', function (e) {
       if (state.over || (e.button !== undefined && e.button !== 0)) return;
       Sound.ensure();
+      Sound.unlockFinal();
       moveAim(pointerToX(e.clientX));
       tryDrop();
     });
@@ -4000,6 +4097,7 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
     stage.addEventListener('touchstart', function (e) {
       if (state.over) return;
       Sound.ensure();
+      Sound.unlockFinal();
       moveAim(touchX(e));
       touchAiming = true;
       if (e.preventDefault) e.preventDefault();
@@ -4039,7 +4137,7 @@ window.LWY_TIERS = [{"file":"李文亚 (1).jpg","name":"二次元文亚","short"
       state.aimX = clamp(state.aimX + 14, WALL, W);
       e.preventDefault();
     } else if (e.code === 'Space' || e.code === 'Enter' || e.code === 'ArrowDown') {
-      if (!state.over) { tryDrop(); e.preventDefault(); }
+      if (!state.over) { Sound.unlockFinal(); tryDrop(); e.preventDefault(); }
     } else if (e.code === 'KeyB') {
       if (state.hazard) setWhiteMode(!state.whiteMode);
       e.preventDefault();
